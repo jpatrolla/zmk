@@ -25,6 +25,12 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 
+// Delay between Caps Lock press and release to ensure the BLE stack
+// transmits the press report before the release is queued. Without this,
+// the back-to-back reports may be coalesced or filtered by the host OS
+// (macOS in particular filters very brief Caps Lock presses).
+#define CAPS_LOCK_RELEASE_DELAY_MS 200
+
 struct caps_lock_word_continue_item {
     uint16_t page;
     uint32_t id;
@@ -40,6 +46,20 @@ struct behavior_caps_lock_word_data {
     bool active;
 };
 
+static void caps_lock_release_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(caps_lock_release_work, caps_lock_release_work_handler);
+
+static void caps_lock_release_work_handler(struct k_work *work) {
+    raise_zmk_keycode_state_changed((struct zmk_keycode_state_changed){
+        .usage_page = HID_USAGE_KEY,
+        .keycode = HID_USAGE_KEY_KEYBOARD_CAPS_LOCK,
+        .implicit_modifiers = 0,
+        .explicit_modifiers = 0,
+        .state = false,
+        .timestamp = k_uptime_get(),
+    });
+}
+
 static void toggle_caps_lock(void) {
     raise_zmk_keycode_state_changed((struct zmk_keycode_state_changed){
         .usage_page = HID_USAGE_KEY,
@@ -49,14 +69,7 @@ static void toggle_caps_lock(void) {
         .state = true,
         .timestamp = k_uptime_get(),
     });
-    raise_zmk_keycode_state_changed((struct zmk_keycode_state_changed){
-        .usage_page = HID_USAGE_KEY,
-        .keycode = HID_USAGE_KEY_KEYBOARD_CAPS_LOCK,
-        .implicit_modifiers = 0,
-        .explicit_modifiers = 0,
-        .state = false,
-        .timestamp = k_uptime_get(),
-    });
+    k_work_schedule(&caps_lock_release_work, K_MSEC(CAPS_LOCK_RELEASE_DELAY_MS));
 }
 
 static void activate_caps_lock_word(const struct device *dev) {
