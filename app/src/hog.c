@@ -79,6 +79,11 @@ static struct hids_report mouse_input = {
     .type = HIDS_INPUT,
 };
 
+static struct hids_report peripheral_mouse_input = {
+    .id = ZMK_HID_REPORT_ID_MOUSE_PERIPHERAL,
+    .type = HIDS_INPUT,
+};
+
 #if IS_ENABLED(CONFIG_ZMK_POINTING_SMOOTH_SCROLLING)
 
 static struct hids_report mouse_feature = {
@@ -162,6 +167,15 @@ static ssize_t read_hids_mouse_input_report(struct bt_conn *conn, const struct b
     struct zmk_hid_mouse_report_body *report_body = &zmk_hid_get_mouse_report()->body;
     return bt_gatt_attr_read(conn, attr, buf, len, offset, report_body,
                              sizeof(struct zmk_hid_mouse_report_body));
+}
+
+static ssize_t read_hids_peripheral_mouse_input_report(struct bt_conn *conn,
+                                                       const struct bt_gatt_attr *attr, void *buf,
+                                                       uint16_t len, uint16_t offset) {
+    struct zmk_hid_peripheral_mouse_report_body *report_body =
+        &zmk_hid_get_peripheral_mouse_report()->body;
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, report_body,
+                             sizeof(struct zmk_hid_peripheral_mouse_report_body));
 }
 
 #if IS_ENABLED(CONFIG_ZMK_POINTING_SMOOTH_SCROLLING)
@@ -285,6 +299,14 @@ BT_GATT_SERVICE_DEFINE(
     BT_GATT_DESCRIPTOR(BT_UUID_HIDS_REPORT_REF, BT_GATT_PERM_READ_ENCRYPT, read_hids_report_ref,
                        NULL, &mouse_feature),
 #endif // IS_ENABLED(CONFIG_ZMK_POINTING_SMOOTH_SCROLLING)
+
+    // Peripheral mouse (second trackball) - Report ID 0x04
+    BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_REPORT, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ_ENCRYPT, read_hids_peripheral_mouse_input_report,
+                           NULL, NULL),
+    BT_GATT_CCC(input_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+    BT_GATT_DESCRIPTOR(BT_UUID_HIDS_REPORT_REF, BT_GATT_PERM_READ_ENCRYPT, read_hids_report_ref,
+                       NULL, &peripheral_mouse_input),
 
 #endif // IS_ENABLED(CONFIG_ZMK_POINTING)
 
@@ -445,7 +467,7 @@ int zmk_hog_send_mouse_report(struct zmk_hid_mouse_report_body *report) {
     if (err) {
         switch (err) {
         case -EAGAIN: {
-            LOG_WRN("Consumer message queue full, popping first message and queueing again");
+            LOG_WRN("Mouse message queue full, popping first message and queueing again");
             struct zmk_hid_mouse_report_body discarded_report;
             k_msgq_get(&zmk_hog_mouse_msgq, &discarded_report, K_NO_WAIT);
             return zmk_hog_send_mouse_report(report);
@@ -457,6 +479,66 @@ int zmk_hog_send_mouse_report(struct zmk_hid_mouse_report_body *report) {
     }
 
     k_work_submit_to_queue(&hog_work_q, &hog_mouse_work);
+
+    return 0;
+};
+
+// Peripheral mouse attr index:
+// Without smooth scrolling: 17 (after mouse section at 13-16)
+// With smooth scrolling: 20 (mouse feature adds 3 attrs at 17-19)
+#if IS_ENABLED(CONFIG_ZMK_POINTING_SMOOTH_SCROLLING)
+#define PERIPHERAL_MOUSE_ATTR_INDEX 20
+#else
+#define PERIPHERAL_MOUSE_ATTR_INDEX 17
+#endif
+
+K_MSGQ_DEFINE(zmk_hog_peripheral_mouse_msgq, sizeof(struct zmk_hid_peripheral_mouse_report_body),
+              CONFIG_ZMK_BLE_MOUSE_REPORT_QUEUE_SIZE, 4);
+
+void send_peripheral_mouse_report_callback(struct k_work *work) {
+    struct zmk_hid_peripheral_mouse_report_body report;
+    while (k_msgq_get(&zmk_hog_peripheral_mouse_msgq, &report, K_NO_WAIT) == 0) {
+        struct bt_conn *conn = zmk_ble_active_profile_conn();
+        if (conn == NULL) {
+            return;
+        }
+
+        struct bt_gatt_notify_params notify_params = {
+            .attr = &hog_svc.attrs[PERIPHERAL_MOUSE_ATTR_INDEX],
+            .data = &report,
+            .len = sizeof(report),
+        };
+
+        int err = bt_gatt_notify_cb(conn, &notify_params);
+        if (err == -EPERM) {
+            bt_conn_set_security(conn, BT_SECURITY_L2);
+        } else if (err) {
+            LOG_DBG("Error notifying peripheral mouse %d", err);
+        }
+
+        bt_conn_unref(conn);
+    }
+};
+
+K_WORK_DEFINE(hog_peripheral_mouse_work, send_peripheral_mouse_report_callback);
+
+int zmk_hog_send_peripheral_mouse_report(struct zmk_hid_peripheral_mouse_report_body *report) {
+    int err = k_msgq_put(&zmk_hog_peripheral_mouse_msgq, report, K_MSEC(100));
+    if (err) {
+        switch (err) {
+        case -EAGAIN: {
+            LOG_WRN("Peripheral mouse queue full, popping first message and queueing again");
+            struct zmk_hid_peripheral_mouse_report_body discarded_report;
+            k_msgq_get(&zmk_hog_peripheral_mouse_msgq, &discarded_report, K_NO_WAIT);
+            return zmk_hog_send_peripheral_mouse_report(report);
+        }
+        default:
+            LOG_WRN("Failed to queue peripheral mouse report to send (%d)", err);
+            return err;
+        }
+    }
+
+    k_work_submit_to_queue(&hog_work_q, &hog_peripheral_mouse_work);
 
     return 0;
 };

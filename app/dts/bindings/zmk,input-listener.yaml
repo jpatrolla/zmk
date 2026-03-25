@@ -12,6 +12,9 @@ properties:
     required: true
   input-processors:
     type: phandle-array
+  zmk,separate-mouse-device:
+    type: boolean
+    description: Route this listener's mouse events to a separate HID mouse interface
 
 child-binding:
   description: "Listener overrides for certain layers"

@@ -31,6 +31,10 @@ static struct zmk_hid_mouse_report mouse_report = {
     .report_id = ZMK_HID_REPORT_ID_MOUSE,
     .body = {.buttons = 0, .d_x = 0, .d_y = 0, .d_scroll_y = 0}};
 
+static struct zmk_hid_peripheral_mouse_report peripheral_mouse_report = {
+    .report_id = ZMK_HID_REPORT_ID_MOUSE_PERIPHERAL,
+    .body = {.buttons = 0, .d_x = 0, .d_y = 0}};
+
 #endif // IS_ENABLED(CONFIG_ZMK_POINTING)
 
 // Keep track of how often a modifier was pressed.
@@ -475,5 +479,27 @@ struct zmk_hid_consumer_report *zmk_hid_get_consumer_report(void) { return &cons
 #if IS_ENABLED(CONFIG_ZMK_POINTING)
 
 struct zmk_hid_mouse_report *zmk_hid_get_mouse_report(void) { return &mouse_report; }
+
+void zmk_hid_peripheral_mouse_movement_set(int16_t x, int16_t y) {
+    peripheral_mouse_report.body.d_x = x;
+    peripheral_mouse_report.body.d_y = y;
+    LOG_DBG("Peripheral mouse movement set to %d/%d", x, y);
+}
+
+void zmk_hid_peripheral_mouse_movement_update(int16_t x, int16_t y) {
+    peripheral_mouse_report.body.d_x += x;
+    peripheral_mouse_report.body.d_y += y;
+    LOG_DBG("Peripheral mouse movement updated to %d/%d",
+            peripheral_mouse_report.body.d_x, peripheral_mouse_report.body.d_y);
+}
+
+void zmk_hid_peripheral_mouse_clear(void) {
+    LOG_DBG("Peripheral mouse report cleared");
+    memset(&peripheral_mouse_report.body, 0, sizeof(peripheral_mouse_report.body));
+}
+
+struct zmk_hid_peripheral_mouse_report *zmk_hid_get_peripheral_mouse_report(void) {
+    return &peripheral_mouse_report;
+}
 
 #endif // IS_ENABLED(CONFIG_ZMK_POINTING)

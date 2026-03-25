@@ -72,6 +72,7 @@ struct input_listener_processor_data {
 
 struct input_listener_config {
     uint8_t listener_index;
+    bool separate_mouse_device;
     struct input_listener_config_entry base;
     size_t layer_overrides_len;
     struct input_listener_layer_override layer_overrides[];
@@ -292,34 +293,46 @@ static void input_handler(const struct input_listener_config *config,
     }
 
     if (evt->sync) {
-        if (data->mouse.wheel_data.mode == INPUT_LISTENER_XY_DATA_MODE_REL) {
-            zmk_hid_mouse_scroll_set(data->mouse.wheel_data.x.value,
-                                     data->mouse.wheel_data.y.value);
-        }
+        if (config->separate_mouse_device) {
+            // Route to peripheral mouse (second HID interface)
+            if (data->mouse.data.mode == INPUT_LISTENER_XY_DATA_MODE_REL) {
+                zmk_hid_peripheral_mouse_movement_set(data->mouse.data.x.value,
+                                                      data->mouse.data.y.value);
+            }
 
-        if (data->mouse.data.mode == INPUT_LISTENER_XY_DATA_MODE_REL) {
-            zmk_hid_mouse_movement_set(data->mouse.data.x.value, data->mouse.data.y.value);
-        }
+            zmk_endpoints_send_peripheral_mouse_report();
+            zmk_hid_peripheral_mouse_movement_set(0, 0);
+        } else {
+            // Route to primary mouse (main HID interface)
+            if (data->mouse.wheel_data.mode == INPUT_LISTENER_XY_DATA_MODE_REL) {
+                zmk_hid_mouse_scroll_set(data->mouse.wheel_data.x.value,
+                                         data->mouse.wheel_data.y.value);
+            }
 
-        if (data->mouse.button_set != 0) {
-            for (int i = 0; i < ZMK_HID_MOUSE_NUM_BUTTONS; i++) {
-                if ((data->mouse.button_set & BIT(i)) != 0) {
-                    zmk_hid_mouse_button_press(i);
+            if (data->mouse.data.mode == INPUT_LISTENER_XY_DATA_MODE_REL) {
+                zmk_hid_mouse_movement_set(data->mouse.data.x.value, data->mouse.data.y.value);
+            }
+
+            if (data->mouse.button_set != 0) {
+                for (int i = 0; i < ZMK_HID_MOUSE_NUM_BUTTONS; i++) {
+                    if ((data->mouse.button_set & BIT(i)) != 0) {
+                        zmk_hid_mouse_button_press(i);
+                    }
                 }
             }
-        }
 
-        if (data->mouse.button_clear != 0) {
-            for (int i = 0; i < ZMK_HID_MOUSE_NUM_BUTTONS; i++) {
-                if ((data->mouse.button_clear & BIT(i)) != 0) {
-                    zmk_hid_mouse_button_release(i);
+            if (data->mouse.button_clear != 0) {
+                for (int i = 0; i < ZMK_HID_MOUSE_NUM_BUTTONS; i++) {
+                    if ((data->mouse.button_clear & BIT(i)) != 0) {
+                        zmk_hid_mouse_button_release(i);
+                    }
                 }
             }
-        }
 
-        zmk_endpoints_send_mouse_report();
-        zmk_hid_mouse_scroll_set(0, 0);
-        zmk_hid_mouse_movement_set(0, 0);
+            zmk_endpoints_send_mouse_report();
+            zmk_hid_mouse_scroll_set(0, 0);
+            zmk_hid_mouse_movement_set(0, 0);
+        }
 
         clear_xy_data(&data->mouse.data);
         clear_xy_data(&data->mouse.wheel_data);
@@ -381,6 +394,7 @@ static void input_handler(const struct input_listener_config *config,
                                      n) static const struct input_listener_config config_##n =     \
              {                                                                                     \
                  .listener_index = n,                                                              \
+                 .separate_mouse_device = DT_INST_PROP_OR(n, zmk_separate_mouse_device, false),    \
                  .base = IL_EXTRACT_CONFIG(DT_DRV_INST(n), n, base),                               \
                  .layer_overrides_len = (0 DT_INST_FOREACH_CHILD(n, IL_ONE)),                      \
                  .layer_overrides = {DT_INST_FOREACH_CHILD_SEP_VARGS(n, IL_OVERRIDE, (, ), n)},    \

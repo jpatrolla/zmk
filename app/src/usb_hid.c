@@ -32,6 +32,47 @@ static K_SEM_DEFINE(hid_sem, 1, 1);
 
 static void in_ready_cb(const struct device *dev) { k_sem_give(&hid_sem); }
 
+#if IS_ENABLED(CONFIG_ZMK_POINTING)
+static const uint8_t zmk_hid_peripheral_mouse_report_desc[] = {
+    HID_USAGE_PAGE(HID_USAGE_GD),
+    HID_USAGE(HID_USAGE_GD_MOUSE),
+    HID_COLLECTION(HID_COLLECTION_APPLICATION),
+    HID_REPORT_ID(0x01),
+    HID_USAGE(HID_USAGE_GD_POINTER),
+    HID_COLLECTION(HID_COLLECTION_PHYSICAL),
+    HID_USAGE_PAGE(HID_USAGE_BUTTON),
+    HID_USAGE_MIN8(0x1),
+    HID_USAGE_MAX8(ZMK_HID_MOUSE_NUM_BUTTONS),
+    HID_LOGICAL_MIN8(0x00),
+    HID_LOGICAL_MAX8(0x01),
+    HID_REPORT_SIZE(0x01),
+    HID_REPORT_COUNT(0x5),
+    HID_INPUT(ZMK_HID_MAIN_VAL_DATA | ZMK_HID_MAIN_VAL_VAR | ZMK_HID_MAIN_VAL_ABS),
+    HID_REPORT_SIZE(0x03),
+    HID_REPORT_COUNT(0x01),
+    HID_INPUT(ZMK_HID_MAIN_VAL_CONST | ZMK_HID_MAIN_VAL_VAR | ZMK_HID_MAIN_VAL_ABS),
+    HID_USAGE_PAGE(HID_USAGE_GEN_DESKTOP),
+    HID_USAGE(HID_USAGE_GD_X),
+    HID_USAGE(HID_USAGE_GD_Y),
+    HID_LOGICAL_MIN16(0x00, 0x80),
+    HID_LOGICAL_MAX16(0xFF, 0x7F),
+    HID_REPORT_SIZE(0x10),
+    HID_REPORT_COUNT(0x02),
+    HID_INPUT(ZMK_HID_MAIN_VAL_DATA | ZMK_HID_MAIN_VAL_VAR | ZMK_HID_MAIN_VAL_REL),
+    HID_END_COLLECTION,
+    HID_END_COLLECTION,
+};
+
+static const struct device *hid_dev_peripheral;
+static K_SEM_DEFINE(hid_peripheral_sem, 1, 1);
+
+static void in_ready_peripheral_cb(const struct device *dev) { k_sem_give(&hid_peripheral_sem); }
+
+static const struct hid_ops peripheral_ops = {
+    .int_in_ready = in_ready_peripheral_cb,
+};
+#endif // IS_ENABLED(CONFIG_ZMK_POINTING)
+
 #define HID_GET_REPORT_TYPE_MASK 0xff00
 #define HID_GET_REPORT_ID_MASK 0x00ff
 
@@ -233,6 +274,36 @@ int zmk_usb_hid_send_mouse_report() {
     struct zmk_hid_mouse_report *report = zmk_hid_get_mouse_report();
     return zmk_usb_hid_send_report((uint8_t *)report, sizeof(*report));
 }
+
+static int zmk_usb_hid_send_peripheral_report(const uint8_t *report, size_t len) {
+    switch (zmk_usb_get_status()) {
+    case USB_DC_SUSPEND:
+        return usb_wakeup_request();
+    case USB_DC_ERROR:
+    case USB_DC_RESET:
+    case USB_DC_DISCONNECTED:
+    case USB_DC_UNKNOWN:
+        return -ENODEV;
+    default:
+        k_sem_take(&hid_peripheral_sem, K_MSEC(30));
+        int err = hid_int_ep_write(hid_dev_peripheral, report, len, NULL);
+
+        if (err) {
+            k_sem_give(&hid_peripheral_sem);
+        }
+
+        return err;
+    }
+}
+
+int zmk_usb_hid_send_peripheral_mouse_report(void) {
+    struct zmk_hid_peripheral_mouse_report *report = zmk_hid_get_peripheral_mouse_report();
+    // Send with Report ID 0x01 for the separate USB HID interface
+    uint8_t usb_report[1 + sizeof(struct zmk_hid_peripheral_mouse_report_body)];
+    usb_report[0] = 0x01;
+    memcpy(&usb_report[1], &report->body, sizeof(report->body));
+    return zmk_usb_hid_send_peripheral_report(usb_report, sizeof(usb_report));
+}
 #endif // IS_ENABLED(CONFIG_ZMK_POINTING)
 
 static int zmk_usb_hid_init(void) {
@@ -249,6 +320,18 @@ static int zmk_usb_hid_init(void) {
 #endif /* IS_ENABLED(CONFIG_ZMK_USB_BOOT) */
 
     usb_hid_init(hid_dev);
+
+#if IS_ENABLED(CONFIG_ZMK_POINTING)
+    hid_dev_peripheral = device_get_binding("HID_1");
+    if (hid_dev_peripheral == NULL) {
+        LOG_ERR("Unable to locate peripheral HID device");
+        return -EINVAL;
+    }
+
+    usb_hid_register_device(hid_dev_peripheral, zmk_hid_peripheral_mouse_report_desc,
+                            sizeof(zmk_hid_peripheral_mouse_report_desc), &peripheral_ops);
+    usb_hid_init(hid_dev_peripheral);
+#endif // IS_ENABLED(CONFIG_ZMK_POINTING)
 
     return 0;
 }
